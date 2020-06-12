@@ -1,11 +1,10 @@
-﻿using System.Collections.Generic;
-using FluentAssertions;
-using RabbitMQ.Client.Framing;
+﻿using FluentAssertions;
+using RabbitMQ.Client;
 // ReSharper disable InconsistentNaming
 using System;
+using System.Collections.Generic;
 using System.Text;
 using Xunit;
-using RabbitMQ.Client;
 
 namespace EasyNetQ.Tests
 {
@@ -17,7 +16,7 @@ namespace EasyNetQ.Tests
         {
             serializer = new JsonSerializer();
         }
-        
+
         [Fact]
         public void Should_be_able_to_serialize_and_deserialize_a_default_message()
         {
@@ -57,8 +56,8 @@ namespace EasyNetQ.Tests
                 UserId = "user id",
                 Headers = new Dictionary<string, object>
                 {
-                    {"one", "header one"},
-                    {"two", "header two"}
+                    { "one", "header one" },
+                    { "two", "header two" }
                 }
             };
 
@@ -79,9 +78,9 @@ namespace EasyNetQ.Tests
             getPropertiesString(originalProperties).Should().Be(getPropertiesString(newProperties));
         }
 
-        class A { }
-        class B : A { }
-        class PolyMessage
+        private class A { }
+        private class B : A { }
+        private class PolyMessage
         {
             public A AorB { get; set; }
         }

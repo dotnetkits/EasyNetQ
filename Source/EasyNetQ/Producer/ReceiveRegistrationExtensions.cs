@@ -1,8 +1,9 @@
 ﻿using System;
 using System.Threading.Tasks;
 using EasyNetQ.Internals;
+using EasyNetQ.Producer;
 
-namespace EasyNetQ.Producer
+namespace EasyNetQ
 {
     public static class ReceiveRegistrationExtensions
     {
@@ -19,7 +20,7 @@ namespace EasyNetQ.Producer
 
             return receiveRegistration.Add<T>((m, c) => onMessage(m));
         }
-        
+
         /// <summary>
         /// Add an asynchronous message handler to this receiver
         /// </summary>

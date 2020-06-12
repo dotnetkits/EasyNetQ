@@ -2,7 +2,7 @@
 {
     /// <summary>
     /// Allows publish configuration to be fluently extended without adding overloads to IBus
-    /// 
+    ///
     /// e.g.
     /// x => x.WithTopic("*.brighton").WithPriority(2)
     /// </summary>
@@ -28,24 +28,15 @@
         /// <param name="expires">The TTL to set in milliseconds</param>
         /// <returns>IPublishConfiguration</returns>
         IPublishConfiguration WithExpires(int expires);
-
-        /// <summary>
-        /// Sets the queue name to publish to
-        /// </summary>
-        /// <param name="queueName">The queue name</param>
-        /// <returns>IPublishConfiguration</returns>
-        IPublishConfiguration WithQueueName(string queueName);
     }
 
     public class PublishConfiguration : IPublishConfiguration
     {
-        private readonly string defaultTopic;
-
         public PublishConfiguration(string defaultTopic)
         {
             Preconditions.CheckNotNull(defaultTopic, "defaultTopic");
 
-            this.defaultTopic = defaultTopic;
+            Topic = defaultTopic;
         }
 
         public IPublishConfiguration WithPriority(byte priority)
@@ -56,6 +47,8 @@
 
         public IPublishConfiguration WithTopic(string topic)
         {
+            Preconditions.CheckNotNull(topic, "topic");
+
             Topic = topic;
             return this;
         }
@@ -66,23 +59,8 @@
             return this;
         }
 
-        public IPublishConfiguration WithQueueName(string queueName)
-        {
-            QueueName = queueName;
-            return this;
-        }
-
         public byte? Priority { get; private set; }
-
-        private string topic;
-
-        public string Topic
-        {
-            get { return topic ?? defaultTopic; }
-            private set { topic = value; }
-        }
-
+        public string Topic { get; private set; }
         public int? Expires { get; private set; }
-        public string QueueName { get; private set; }
     }
 }

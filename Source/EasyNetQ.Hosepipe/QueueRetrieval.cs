@@ -1,13 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-
 using EasyNetQ.Consumer;
-
 using RabbitMQ.Client.Exceptions;
 
 namespace EasyNetQ.Hosepipe
 {
-    public interface IQueueRetreival {
+    public interface IQueueRetreival
+    {
         IEnumerable<HosepipeMessage> GetMessagesFromQueue(QueueParameters parameters);
     }
 
@@ -50,9 +49,9 @@ namespace EasyNetQ.Hosepipe
                         basicGetResult.RoutingKey,
                         parameters.QueueName);
 
-                    yield return new HosepipeMessage(errorMessageSerializer.Serialize(basicGetResult.Body), properties, info);
+                    yield return new HosepipeMessage(errorMessageSerializer.Serialize(basicGetResult.Body.ToArray()), properties, info);
                 }
-            }            
-        } 
+            }
+        }
     }
 }

@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,94 +19,86 @@ namespace EasyNetQ.Producer
         protected const string IsFaultedKey = "IsFaulted";
         protected const string ExceptionMessageKey = "ExceptionMessage";
         protected readonly IAdvancedBus advancedBus;
-        private readonly ConnectionConfiguration connectionConfiguration;
+        private readonly ConnectionConfiguration configuration;
         protected readonly IConventions conventions;
-        private readonly List<IDisposable> eventBusSubscriptions = new List<IDisposable>();
 
         protected readonly IMessageDeliveryModeStrategy messageDeliveryModeStrategy;
-        protected readonly IPublishExchangeDeclareStrategy publishExchangeDeclareStrategy;
-        private readonly ConcurrentDictionary<Guid, ResponseAction> responseActions = new ConcurrentDictionary<Guid, ResponseAction>();
+        protected readonly IExchangeDeclareStrategy exchangeDeclareStrategy;
+        private readonly ConcurrentDictionary<string, ResponseAction> responseActions = new ConcurrentDictionary<string, ResponseAction>();
         private readonly ConcurrentDictionary<RpcKey, ResponseSubscription> responseSubscriptions = new ConcurrentDictionary<RpcKey, ResponseSubscription>();
 
         private readonly AsyncLock responseSubscriptionsLock = new AsyncLock();
-        private readonly ITimeoutStrategy timeoutStrategy;
         private readonly ITypeNameSerializer typeNameSerializer;
+        private readonly ICorrelationIdGenerationStrategy correlationIdGenerationStrategy;
+        private readonly IDisposable eventSubscription;
 
         public DefaultRpc(
-            ConnectionConfiguration connectionConfiguration,
+            ConnectionConfiguration configuration,
             IAdvancedBus advancedBus,
             IEventBus eventBus,
             IConventions conventions,
-            IPublishExchangeDeclareStrategy publishExchangeDeclareStrategy,
+            IExchangeDeclareStrategy exchangeDeclareStrategy,
             IMessageDeliveryModeStrategy messageDeliveryModeStrategy,
-            ITimeoutStrategy timeoutStrategy,
-            ITypeNameSerializer typeNameSerializer
+            ITypeNameSerializer typeNameSerializer,
+            ICorrelationIdGenerationStrategy correlationIdGenerationStrategy
         )
         {
-            Preconditions.CheckNotNull(connectionConfiguration, "configuration");
+            Preconditions.CheckNotNull(configuration, "configuration");
             Preconditions.CheckNotNull(advancedBus, "advancedBus");
             Preconditions.CheckNotNull(eventBus, "eventBus");
             Preconditions.CheckNotNull(conventions, "conventions");
-            Preconditions.CheckNotNull(publishExchangeDeclareStrategy, "publishExchangeDeclareStrategy");
+            Preconditions.CheckNotNull(exchangeDeclareStrategy, "publishExchangeDeclareStrategy");
             Preconditions.CheckNotNull(messageDeliveryModeStrategy, "messageDeliveryModeStrategy");
-            Preconditions.CheckNotNull(timeoutStrategy, "timeoutStrategy");
             Preconditions.CheckNotNull(typeNameSerializer, "typeNameSerializer");
+            Preconditions.CheckNotNull(correlationIdGenerationStrategy, "correlationIdGenerationStrategy");
 
-            this.connectionConfiguration = connectionConfiguration;
+            this.configuration = configuration;
             this.advancedBus = advancedBus;
             this.conventions = conventions;
-            this.publishExchangeDeclareStrategy = publishExchangeDeclareStrategy;
+            this.exchangeDeclareStrategy = exchangeDeclareStrategy;
             this.messageDeliveryModeStrategy = messageDeliveryModeStrategy;
-            this.timeoutStrategy = timeoutStrategy;
             this.typeNameSerializer = typeNameSerializer;
+            this.correlationIdGenerationStrategy = correlationIdGenerationStrategy;
 
-            eventBusSubscriptions.Add(eventBus.Subscribe<ConnectionCreatedEvent>(OnConnectionCreated));
+            eventSubscription = eventBus.Subscribe<ConnectionRecoveredEvent>(OnConnectionRecovered);
         }
 
+        /// <inheritdoc />
         public virtual async Task<TResponse> RequestAsync<TRequest, TResponse>(
             TRequest request,
             Action<IRequestConfiguration> configure,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken = default
         )
         {
             Preconditions.CheckNotNull(request, "request");
 
-            var correlationId = Guid.NewGuid();
             var requestType = typeof(TRequest);
-            var configuration = new RequestConfiguration();
-            configure(configuration);
+            var requestConfiguration = new RequestConfiguration(
+                conventions.RpcRoutingKeyNamingConvention(requestType),
+                configuration.Timeout
+            );
+            configure(requestConfiguration);
 
-            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-            {
-                var timeoutSeconds = timeoutStrategy.GetTimeoutSeconds(requestType);
-                if (timeoutSeconds > 0) cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            using var cts = cancellationToken.WithTimeout(requestConfiguration.Expiration);
 
-                var tcs = TaskHelpers.CreateTcs<TResponse>();
-                RegisterResponseActions(correlationId, tcs);
+            var correlationId = correlationIdGenerationStrategy.GetCorrelationId();
+            var tcs = new TaskCompletionSource<TResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            RegisterResponseActions(correlationId, tcs);
+            using var callback = DisposableAction.Create(DeRegisterResponseActions, correlationId);
 
-                using (cts.Token.Register(() => DeRegisterResponseActions(correlationId)))
-                using (cts.Token.Register(() => tcs.TrySetCanceled()))
-                {
-                    try
-                    {
-                        var queueName = await SubscribeToResponseAsync<TRequest, TResponse>(cts.Token).ConfigureAwait(false);
-                        var routingKey = configuration.QueueName ?? conventions.RpcRoutingKeyNamingConvention(requestType);
-                        await RequestPublishAsync(request, routingKey, queueName, correlationId, cts.Token).ConfigureAwait(false);
-
-                        return await tcs.Task.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                    {
-                        throw new TimeoutException();
-                    }
-                }
-            }
+            var queueName = await SubscribeToResponseAsync<TRequest, TResponse>(cts.Token).ConfigureAwait(false);
+            var routingKey = requestConfiguration.QueueName;
+            var expiration = requestConfiguration.Expiration;
+            await RequestPublishAsync(request, routingKey, queueName, correlationId, expiration, cts.Token).ConfigureAwait(false);
+            tcs.AttachCancellation(cts.Token);
+            return await tcs.Task.ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public virtual AwaitableDisposable<IDisposable> RespondAsync<TRequest, TResponse>(
             Func<TRequest, CancellationToken, Task<TResponse>> responder,
             Action<IResponderConfiguration> configure,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken = default
         )
         {
             Preconditions.CheckNotNull(responder, "responder");
@@ -118,16 +110,15 @@ namespace EasyNetQ.Producer
             return RespondAsyncInternal(responder, configure, cancellationToken).ToAwaitableDisposable();
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
-            foreach (var eventBusSubscription in eventBusSubscriptions)
-                eventBusSubscription.Dispose();
-
+            eventSubscription.Dispose();
             foreach (var responseSubscription in responseSubscriptions.Values)
                 responseSubscription.Unsubscribe();
         }
 
-        private void OnConnectionCreated(ConnectionCreatedEvent @event)
+        private void OnConnectionRecovered(ConnectionRecoveredEvent @event)
         {
             var responseActionsValues = responseActions.Values;
             var responseSubscriptionsValues = responseSubscriptions.Values;
@@ -139,17 +130,17 @@ namespace EasyNetQ.Producer
             foreach (var responseSubscription in responseSubscriptionsValues) responseSubscription.Unsubscribe();
         }
 
-        protected void DeRegisterResponseActions(Guid correlationId)
+        protected void DeRegisterResponseActions(string correlationId)
         {
-            responseActions.TryRemove(correlationId, out _);
+            responseActions.Remove(correlationId);
         }
 
-        protected void RegisterResponseActions<TResponse>(Guid correlationId, TaskCompletionSource<TResponse> tcs)
+        protected void RegisterResponseActions<TResponse>(string correlationId, TaskCompletionSource<TResponse> tcs)
         {
             var responseAction = new ResponseAction(
                 message =>
                 {
-                    var msg = (IMessage<TResponse>) message;
+                    var msg = (IMessage<TResponse>)message;
 
                     var isFaulted = false;
                     var exceptionMessage = "The exception message has not been specified.";
@@ -158,15 +149,15 @@ namespace EasyNetQ.Producer
                         if (msg.Properties.Headers.ContainsKey(IsFaultedKey))
                             isFaulted = Convert.ToBoolean(msg.Properties.Headers[IsFaultedKey]);
                         if (msg.Properties.Headers.ContainsKey(ExceptionMessageKey))
-                            exceptionMessage = Encoding.UTF8.GetString((byte[]) msg.Properties.Headers[ExceptionMessageKey]);
+                            exceptionMessage = Encoding.UTF8.GetString((byte[])msg.Properties.Headers[ExceptionMessageKey]);
                     }
 
                     if (isFaulted)
-                        tcs.TrySetExceptionAsynchronously(new EasyNetQResponderException(exceptionMessage));
+                        tcs.TrySetException(new EasyNetQResponderException(exceptionMessage));
                     else
-                        tcs.TrySetResultAsynchronously(msg.Body);
+                        tcs.TrySetResult(msg.Body);
                 },
-                () => tcs.TrySetExceptionAsynchronously(new EasyNetQException("Connection lost while request was in-flight. CorrelationId: {0}", correlationId))
+                () => tcs.TrySetException(new EasyNetQException("Connection lost while request was in-flight. CorrelationId: {0}", correlationId))
             );
 
             responseActions.TryAdd(correlationId, responseAction);
@@ -191,17 +182,20 @@ namespace EasyNetQ.Producer
                     cancellationToken
                 ).ConfigureAwait(false);
 
-                var exchange = await publishExchangeDeclareStrategy.DeclareExchangeAsync(
-                    conventions.RpcResponseExchangeNamingConvention(responseType),
-                    ExchangeType.Direct,
-                    cancellationToken
-                ).ConfigureAwait(false);
-
-                await advancedBus.BindAsync(exchange, queue, queue.Name, cancellationToken).ConfigureAwait(false);
+                var exchangeName = conventions.RpcResponseExchangeNamingConvention(responseType);
+                if (exchangeName != Exchange.GetDefault().Name)
+                {
+                    var exchange = await exchangeDeclareStrategy.DeclareExchangeAsync(
+                        exchangeName,
+                        ExchangeType.Direct,
+                        cancellationToken
+                    ).ConfigureAwait(false);
+                    await advancedBus.BindAsync(exchange, queue, queue.Name, cancellationToken).ConfigureAwait(false);
+                }
 
                 var subscription = advancedBus.Consume<TResponse>(queue, (message, messageReceivedInfo) =>
                 {
-                    if (Guid.TryParse(message.Properties.CorrelationId, out var correlationId) && responseActions.TryRemove(correlationId, out var responseAction))
+                    if (responseActions.TryRemove(message.Properties.CorrelationId, out var responseAction))
                         responseAction.OnSuccess(message);
                 });
 
@@ -214,40 +208,43 @@ namespace EasyNetQ.Producer
             TRequest request,
             string routingKey,
             string returnQueueName,
-            Guid correlationId,
+            string correlationId,
+            TimeSpan expiration,
             CancellationToken cancellationToken
         )
         {
             var requestType = typeof(TRequest);
-            var exchange = await publishExchangeDeclareStrategy.DeclareExchangeAsync(
+            var exchange = await exchangeDeclareStrategy.DeclareExchangeAsync(
                 conventions.RpcRequestExchangeNamingConvention(requestType),
                 ExchangeType.Direct,
                 cancellationToken
             ).ConfigureAwait(false);
 
-            var requestMessage = new Message<TRequest>(request)
+            var requestProperties = new MessageProperties
             {
-                Properties =
-                {
-                    ReplyTo = returnQueueName,
-                    CorrelationId = correlationId.ToString(),
-                    Expiration = (timeoutStrategy.GetTimeoutSeconds(requestType) * 1000).ToString(),
-                    DeliveryMode = messageDeliveryModeStrategy.GetDeliveryMode(requestType)
-                }
+                ReplyTo = returnQueueName,
+                CorrelationId = correlationId,
+                DeliveryMode = messageDeliveryModeStrategy.GetDeliveryMode(requestType)
             };
+            if (expiration != Timeout.InfiniteTimeSpan)
+                requestProperties.Expiration = expiration.TotalMilliseconds.ToString(CultureInfo.InvariantCulture);
 
+            var requestMessage = new Message<TRequest>(request, requestProperties);
             await advancedBus.PublishAsync(exchange, routingKey, false, requestMessage, cancellationToken).ConfigureAwait(false);
         }
 
-        private async Task<IDisposable> RespondAsyncInternal<TRequest, TResponse>(Func<TRequest, CancellationToken, Task<TResponse>> responder,
-            Action<IResponderConfiguration> configure, CancellationToken cancellationToken)
+        private async Task<IDisposable> RespondAsyncInternal<TRequest, TResponse>(
+            Func<TRequest, CancellationToken, Task<TResponse>> responder,
+            Action<IResponderConfiguration> configure,
+            CancellationToken cancellationToken
+        )
         {
             var requestType = typeof(TRequest);
 
-            var configuration = new ResponderConfiguration(connectionConfiguration.PrefetchCount);
-            configure(configuration);
+            var requestConfiguration = new ResponderConfiguration(configuration.PrefetchCount);
+            configure(requestConfiguration);
 
-            var routingKey = configuration.QueueName ?? conventions.RpcRoutingKeyNamingConvention(requestType);
+            var routingKey = requestConfiguration.QueueName ?? conventions.RpcRoutingKeyNamingConvention(requestType);
 
             var exchange = await advancedBus.ExchangeDeclareAsync(
                 conventions.RpcRequestExchangeNamingConvention(requestType),
@@ -260,19 +257,25 @@ namespace EasyNetQ.Producer
             return advancedBus.Consume<TRequest>(
                 queue,
                 (m, i, c) => RespondToMessageAsync(responder, m, c),
-                c => c.WithPrefetchCount(configuration.PrefetchCount)
+                c => c.WithPrefetchCount(requestConfiguration.PrefetchCount)
             );
         }
 
-        private async Task RespondToMessageAsync<TRequest, TResponse>(Func<TRequest, CancellationToken, Task<TResponse>> responder, IMessage<TRequest> requestMessage,
-            CancellationToken cancellationToken)
+        private async Task RespondToMessageAsync<TRequest, TResponse>(
+            Func<TRequest, CancellationToken, Task<TResponse>> responder,
+            IMessage<TRequest> requestMessage,
+            CancellationToken cancellationToken
+        )
         {
             //TODO Cache declaration of exchange
-            var exchange = await advancedBus.ExchangeDeclareAsync(
-                conventions.RpcResponseExchangeNamingConvention(typeof(TResponse)),
-                ExchangeType.Direct,
-                cancellationToken: cancellationToken
-            ).ConfigureAwait(false);
+            var exchangeName = conventions.RpcResponseExchangeNamingConvention(typeof(TResponse));
+            var exchange = exchangeName == Exchange.GetDefault().Name
+                ? Exchange.GetDefault()
+                : await advancedBus.ExchangeDeclareAsync(
+                    exchangeName,
+                    ExchangeType.Direct,
+                    cancellationToken: cancellationToken
+                ).ConfigureAwait(false);
 
             try
             {

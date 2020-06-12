@@ -15,14 +15,14 @@ namespace EasyNetQ.Scheduling
         /// This required the EasyNetQ.Scheduler service to be running.
         /// </summary>
         /// <typeparam name="T">The message type</typeparam>
-        /// <param name="delay">The delay for message to publish in future</param>
         /// <param name="message">The message to response with</param>
+        /// <param name="delay">The delay for message to publish in future</param>
         /// <param name="topic">The topic string</param>
         /// <param name="cancellationToken">The cancellation token</param>
         Task FuturePublishAsync<T>(
             T message,
             TimeSpan delay,
-            string topic = null,
+            string topic,
             CancellationToken cancellationToken = default
         );
     }

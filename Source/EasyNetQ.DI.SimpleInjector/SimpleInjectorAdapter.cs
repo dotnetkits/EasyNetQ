@@ -10,7 +10,7 @@ namespace EasyNetQ.DI.SimpleInjector
         public SimpleInjectorAdapter(Container container)
         {
             this.container = container ?? throw new ArgumentNullException(nameof(container));
-            this.container.RegisterSingleton<IServiceResolver>(this);
+            this.container.RegisterInstance<IServiceResolver>(this);
         }
 
         public IServiceRegister Register<TService, TImplementation>(Lifetime lifetime = Lifetime.Singleton)
@@ -32,13 +32,12 @@ namespace EasyNetQ.DI.SimpleInjector
 
         public IServiceRegister Register<TService>(TService instance) where TService : class
         {
-            container.RegisterSingleton(instance);
+            container.RegisterInstance(instance);
             return this;
         }
 
         public IServiceRegister Register<TService>(Func<IServiceResolver, TService> factory, Lifetime lifetime = Lifetime.Singleton) where TService : class
         {
-
             switch (lifetime)
             {
                 case Lifetime.Transient:

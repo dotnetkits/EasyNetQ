@@ -1,15 +1,12 @@
 ﻿// ReSharper disable InconsistentNaming
 
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using EasyNetQ.Consumer;
-using EasyNetQ.Events;
 using EasyNetQ.Internals;
-using FluentAssertions;
-using Xunit;
-using RabbitMQ.Client;
 using NSubstitute;
+using RabbitMQ.Client;
+using System;
+using System.Threading.Tasks;
+using Xunit;
 
 namespace EasyNetQ.Tests.HandlerRunnerTests
 {
@@ -38,7 +35,7 @@ namespace EasyNetQ.Tests.HandlerRunnerTests
             consumer.Model.Returns(channel);
 
             context = new ConsumerExecutionContext(
-                (body, properties, info, cancellation) => TaskHelpers.FromException(new Exception()),
+                (body, properties, info, cancellation) => Task.FromException(new Exception()),
                 messageInfo,
                 messageProperties,
                 messageBody

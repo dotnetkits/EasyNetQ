@@ -32,17 +32,16 @@ namespace EasyNetQ.Tests.AutoSubscriberTests
                         .WithPrefetchCount(11)
                         .WithPriority(11)
             };
-            
+
             pubSub.SubscribeAsync(
-                    Arg.Is("MyActionAndAttributeTest"), 
+                    Arg.Is("MyActionAndAttributeTest"),
                     Arg.Any<Func<MessageA, CancellationToken, Task>>(),
                     Arg.Any<Action<ISubscriptionConfiguration>>()
                 )
-                .Returns(TaskHelpers.FromResult(Substitute.For<ISubscriptionResult>()).ToAwaitableDisposable())
+                .Returns(Task.FromResult(Substitute.For<ISubscriptionResult>()).ToAwaitableDisposable())
                 .AndDoes(a => capturedAction = (Action<ISubscriptionConfiguration>)a.Args()[2]);
 
             autoSubscriber.Subscribe(new[] { typeof(MyConsumerWithActionAndAttribute) });
-
         }
 
         public void Dispose()
@@ -66,7 +65,7 @@ namespace EasyNetQ.Tests.AutoSubscriberTests
             var subscriptionConfiguration = new SubscriptionConfiguration(1);
 
             capturedAction.Should().NotBeNull("SubscribeAsync should have been invoked");
-            
+
             capturedAction(subscriptionConfiguration);
 
             subscriptionConfiguration.AutoDelete.Should().BeTrue();
@@ -83,7 +82,7 @@ namespace EasyNetQ.Tests.AutoSubscriberTests
             [SubscriptionConfiguration(AutoDelete = true, Expires = 10, PrefetchCount = 10, Priority = 10)]
             public Task ConsumeAsync(MessageA message, CancellationToken cancellationToken)
             {
-                return TaskHelpers.Completed;
+                return Task.CompletedTask;
             }
         }
 

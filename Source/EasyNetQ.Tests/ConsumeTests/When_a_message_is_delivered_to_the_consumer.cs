@@ -1,8 +1,8 @@
 // ReSharper disable InconsistentNaming
 
 using FluentAssertions;
-using Xunit;
 using NSubstitute;
+using Xunit;
 
 namespace EasyNetQ.Tests.ConsumeTests
 {
@@ -23,7 +23,7 @@ namespace EasyNetQ.Tests.ConsumeTests
         [Fact]
         public void Should_deliver_the_message_body()
         {
-            DeliveredMessageBody.Should().BeSameAs(OriginalBody);
+            DeliveredMessageBody.Should().BeEquivalentTo(OriginalBody);
         }
 
         [Fact]
