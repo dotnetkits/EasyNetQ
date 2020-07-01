@@ -3,13 +3,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using EasyNetQ.Internals;
 
 namespace EasyNetQ
 {
-    public class MessageProperties
-#if NETFX
-        : ICloneable
-#endif
+    public class MessageProperties : ICloneable
     {
         public MessageProperties()
         {

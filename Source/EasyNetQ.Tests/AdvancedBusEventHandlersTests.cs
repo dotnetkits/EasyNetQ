@@ -53,6 +53,7 @@ namespace EasyNetQ.Tests
                 Substitute.For<IProduceConsumeInterceptor>(),
                 Substitute.For<IMessageSerializationStrategy>(),
                 Substitute.For<IConventions>(),
+                Substitute.For<IPullingConsumerFactory>(),
                 advancedBusEventHandlers
             );
         }
@@ -119,7 +120,7 @@ namespace EasyNetQ.Tests
         public void AdvancedBusEventHandlers_MessageReturned_handler_is_called()
         {
             var @event = new ReturnedMessageEvent(
-                new byte[0], new MessageProperties(), new MessageReturnedInfo("my.exchange", "routing.key", "reason")
+                null, new byte[0], new MessageProperties(), new MessageReturnedInfo("my.exchange", "routing.key", "reason")
             );
 
             eventBus.Publish(@event);
